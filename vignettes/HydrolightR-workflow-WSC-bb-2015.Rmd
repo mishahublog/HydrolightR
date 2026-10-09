@@ -1,0 +1,342 @@
+---
+title: "Automating HydroLight Simulation Workflows"
+author: "Package Developer"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Automating HydroLight Simulation Workflows}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+# Introduction
+
+This vignette demonstrates a complete, four-step pipeline to automate
+**HydroLight radiative transfer simulations**. The workflow handles
+everything from processing raw inherent optical properties (IOPs) to
+executing the compiled batch models directly from the R console.
+
+### Workflow Overview
+
+- **Step 1**: Format raw absorption and attenuation data into
+  HydroLight-standard AC files.
+- **Step 2**: Compile and clean cruise hydrographic metadata.
+- **Step 3**: Generate dynamic template-driven HydroLight configuration
+  input scripts (`IFILEs`).
+- **Step 4**: Execute the backend HydroLight terminal executable via an
+  R subprocess.
+
+------------------------------------------------------------------------
+
+# Step 1: Formatting IOP Spectra
+
+HydroLight simulations require depth-resolved inherent optical
+properties (IOPs) in a strict text format. The
+`create_hydrolight_ac_files()` function reads separate absorption (`a`)
+and attenuation (`c`) CSV datasets, joins them by station/depth,
+extracts the explicit wavelengths from the column metadata, and builds
+formatted text matrices containing HydroLight headers.
+
+### Function Definition
+
+```{r step1-fun}
+
+#Getting data
+setwd("Q:/hydrolite_data/Explore_hydrolight/AC_corrected_datasets")
+
+#read absorptions and attenuation
+
+abs_dat<- read.csv("Atl_wat_all_depths_abs_spect_smoothed_2015.csv")
+atts_dat<- read.csv("Atl_wat_all_depths_atts_spect_smoothed_2015.csv")
+
+#full data
+data_file<- read.csv("Q:/SCM-UC/Arctic-SCMs/final_fulldata.csv")
+#filter year and longitudes 
+
+data_file_2015_WSC<- subset(data_file,data_file$Longitude..degrees_east.>0 & 
+                              data_file$year == 2015)
+        #data_file$Latitude..degrees_north.>78.5 & data_file$Latitude..degrees_north.<79)
+#Greenland stations
+WSC_station<- unique(data_file_2015_WSC$Station)
+
+
+#filter absorptions by stations
+abs_dat_WSC<- abs_dat[ abs_dat$station %in% WSC_station,]
+
+#filter attenuation by stations
+atts_dat_WSC<- atts_dat[atts_dat$station %in% WSC_station,]
+
+
+
+```
+
+```{r include=TRUE}
+create_hydrolight_ac_files(
+  data_dir = "Q:/hydrolite_data/Explore_hydrolight/AC_corrected_datasets",
+  output_dir = "Q:/hydrolight_runs/WSC_2015_bb_runs/ac_files",
+  abs_file = abs_dat_WSC,
+  atts_file = atts_dat_WSC,
+  data_suffix = "_smooac_2015.txt",
+  stations = NULL,
+  max_depths = 50
+)
+```
+
+
+
+
+### Create hydrolight Metadata
+
+```{r}
+
+meta_parameters<- c("X", "Cruise", "Station", "Type", "yyyy.mm.ddThh.mm.ss.sss",
+                    "Longitude..degrees_east.", "Latitude..degrees_north.", "St.", "Depth..m.",
+                    "Temperature...C.", "Salinity", "SigmT","PSDslope")
+# Keep the data you considered as mets, for comparison and statistics
+meta <- data_file_2015_WSC[, meta_parameters] 
+# ---------------------------------------------------------
+# Extract year
+# ---------------------------------------------------------
+library(stringr)
+meta$years <- str_split(meta$yyyy.mm.ddThh.mm.ss.sss, "-", simplify = TRUE)[,1]
+# Unique stations
+stations <- unique(meta$Station)
+# ---------------------------------------------------------
+# Convert to datetime
+# ---------------------------------------------------------
+meta$Time <- as.POSIXct(
+  meta$yyyy.mm.ddThh.mm.ss.sss,
+  format = "%Y-%m-%dT%H:%M",
+  tz = "UTC"
+)
+library(lubridate)
+# Extract Hour (HH.MM format like Python)
+meta$Hour <- format(meta$Time, "%H.%M")
+# Day of year
+meta$day <- yday(meta$Time)
+#filter meta with greenaland 
+
+#Tomorrow
+meta_fil<- meta[ meta$Station %in% EG_station,]
+
+# Final dataset
+hydrometa_data <- meta_fil
+# create bb_yung fraction
+
+```
+
+# create jungs fraction
+
+```{r}
+# 1. Prepare the data
+df <- data.frame(
+  index = c(2, 3, 4, 5, 6),
+  of = c(1.021, 1.040, 1.080, 1.175, 1.150),
+  Junge.slope = c(3.0742, 3.2010, 3.4830, 4.0650, 4.8740),
+  backscatter = c(1e-04, 1e-03, 1e-02, 1e-01, 4e-01)
+)
+
+# 2. Fit GAM: backscatter as target variable (Y), Junge.slope as predictor (X)
+library(mgcv)
+gam_model <- gam(backscatter ~ s(Junge.slope, k = 3), data = df)
+
+# 3. Predict fitted values across a sequence of Junge.slope values for plotting
+junge_seq <- seq(min(df$Junge.slope), max(df$Junge.slope), length.out = 200)
+pred <- predict(gam_model, newdata = data.frame(Junge.slope = junge_seq))
+
+# 4. Plot observed points and smooth curve (Linear Scale, No SD/SE lines)
+plot(df$Junge.slope, df$backscatter, pch = 19, col = "blue",
+     xlab = "Junge Slope", ylab = "Backscatter",
+     main = "GAM Fit: Backscatter vs Junge Slope")
+lines(junge_seq, pred, col = "red", lwd = 2)
+
+# --- PREDICTION ON NEW HYDROMETA DATA ---
+
+# 1. Extract PSD slope values
+slope_vals <-data.frame( Junge.slope = Mod(hydrometa_data$PSDslope))
+
+# 2. Create data frame with column name matching predictor 'Junge.slope'
+#data_jung$Junge.slope <- data.frame(Junge.slope = slope_vals)
+
+# 3. Predict backscatter from Junge slope
+hydrometa_data$bb_yung <- predict(gam_model, newdata = slope_vals)
+
+
+```
+
+
+## create backscatter=============================
+```{r}
+source("Q:/hydrolite_data/HydrolighteR/R/create_bb.R")
+
+
+input_folder <- "Q:/hydrolight_runs/WSC_2015_bb_runs/ac_files/"
+output_folder <- "Q:/hydrolight_runs/WSC_2015_bb_runs/bb_outputs_0.020/"
+
+# Get all .txt files in the input folder
+ac_files <- list.files(input_folder, pattern = "\\.txt$", full.names = TRUE)
+
+# Run the converter on every file
+# lapply(ac_files, create_bb, output_dir = output_folder)
+
+#  hydrometa_data<- hydrometa_data[,-8]
+#  hydrometa_data<- hydrometa_data %>% drop_na()
+# 
+# library(foreach)
+
+for(i in 1:length(ac_files)){
+         create_bb(input_filepath = ac_files[i],tilde_bb = 0.020,output_dir = output_folder)}
+
+```
+
+
+
+
+# Step 3: Generating HydroLight Configs (IFILEs)
+
+The `hydrolight_ifile()` tool binds your compiled spatial/temporal
+environmental metadata (`hydrometa_data`) directly into a template
+HydroLight base model config. It handles string formatting rules
+required by the engine core (such as conversion to decimal-comma arrays)
+and cross-references the matching input tracks built in Step 1.
+
+```{r}
+
+for(i in WSC_station){
+
+try(
+hydrolight_ifile(
+  station_name=i,
+    hydrometa_data=hydrometa_data,
+    template_path = "Q:/hydrolite_data/optical_proxyies_inverse/template_config.txt",
+    working_dir = "C:/HE60/run/batch",
+    ac_txt_dir = "Q:/hydrolight_runs/WSC_2015_bb_runs/ac_files",
+    chl_txt_dir = "Q:/hydrolight_runs/WSC_2015_bb_runs/chl_a",
+    chl_suffix = "_chlzdata.txt",
+    cdom_txt_dir = "Q:/hydrolight_runs/WSC_2015_bb_runs/cdom_a",
+    cdom_suffix = "_cdomdata.txt",
+    data_suffix = "_smooac_2015.txt",
+    bb_suffix = "_smooac_2015_Hydrolight_bb.txt",
+    bb_txt_dir = "Q:/hydrolight_runs/WSC_2015_bb_runs/bb_outputs_0.020"
+))
+
+}
+
+```
+
+## Run in Hydrolight with pushbullet
+
+```{r, knitr::opts_knit$set(root.dir = "~C:/HE60/run/batch")}
+
+library(progress)
+library(stringr)
+library(RPushbullet)
+
+#----------------------------------------
+# Pushbullet setup
+#----------------------------------------
+pbSetup(apikey ="o.fMNaBrPojmldEtyTVULaNN1OpBY6DfV7")
+
+setwd("C:/HE60/run/batch/")
+files <- list.files()
+
+stations <- str_replace_all(files, c("^I" = "", "\\.txt$" = ""))
+
+pb <- progress_bar$new(
+  format = "Running [:bar] :current/:total (:percent) ETA: :eta",
+  total = length(stations),
+  clear = FALSE,
+  width = 60
+)
+
+failed <- data.frame(
+  station = character(),
+  error = character(),
+  stringsAsFactors = FALSE
+)
+
+for (i in stations) {
+
+  tryCatch(
+    {
+      run_hydrolight(station = i,model = "Eco")
+    },
+    error = function(e) {
+      failed <<- rbind(
+        failed,
+        data.frame(
+          station = i,
+          error = conditionMessage(e),
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+  )
+
+  pb$tick()
+}
+
+#----------------------------------------
+# Summary
+#----------------------------------------
+successful <- length(stations) - nrow(failed)
+
+cat("\n\nBatch processing finished.\n")
+cat("Successful:", successful, "\n")
+cat("Failed:", nrow(failed), "\n")
+
+if (nrow(failed) > 0) {
+
+  cat("\nFailed stations:\n")
+  print(failed)
+
+  report_file <- file.path(getwd(), "HydroLight_failed_report.csv")
+
+  write.csv(
+    failed,
+    report_file,
+    row.names = FALSE
+  )
+
+  cat("\nReport saved as 'HydroLight_failed_report.csv'\n")
+
+  # Pushbullet notification
+  pbPost(
+    type = "note",
+    title = "HydroLight batch completed",
+    body = paste(
+      "Stations completed:", successful,
+      "\nFailed:", nrow(failed),
+      "\nReport:", report_file
+    )
+  )
+
+} else {
+
+  # Pushbullet notification
+  pbPost(
+    type = "note",
+    title = "HydroLight batch completed",
+    body = paste(
+      successful,
+      "stations completed successfully."
+    )
+  )
+
+}
+
+
+
+
+```

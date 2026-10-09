@@ -1,0 +1,9 @@
+url: ~
+template:
+  bootstrap: 5
+
+navbar:
+  components:
+    links:
+      text: "Support"
+      href: "https://example.com"

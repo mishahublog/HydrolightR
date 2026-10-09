@@ -1,0 +1,123 @@
+---
+title: "Automating HydroLight Simulation Workflows"
+author: "Package Developer"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Automating HydroLight Simulation Workflows}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+# Introduction
+
+This vignette demonstrates a complete, four-step pipeline to automate
+**HydroLight radiative transfer simulations**. The workflow handles
+everything from processing raw inherent optical properties (IOPs) to
+executing the compiled batch models directly from the R console.
+
+### Workflow Overview
+
+- **Step 1**: Format raw absorption and attenuation data into
+  HydroLight-standard AC files.
+- **Step 2**: Compile and clean cruise hydrographic metadata.
+- **Step 3**: Generate dynamic template-driven HydroLight configuration
+  input scripts (`IFILEs`).
+- **Step 4**: Execute the backend HydroLight terminal executable via an
+  R subprocess.
+
+------------------------------------------------------------------------
+
+# Step 1: Formatting IOP Spectra
+
+HydroLight simulations require depth-resolved inherent optical
+properties (IOPs) in a strict text format. The
+`create_hydrolight_ac_files()` function reads separate absorption (`a`)
+and attenuation (`c`) CSV datasets, joins them by station/depth,
+extracts the explicit wavelengths from the column metadata, and builds
+formatted text matrices containing HydroLight headers.
+
+### Function Definition
+
+```{r step1-fun}
+
+```
+
+### Example Usage
+
+``` r
+# Create files for all stations found in the default data directory
+create_hydrolight_ac_files()
+
+# Create files for specific stations and limit output to 30 depth records
+create_hydrolight_ac_files(
+  stations = c("Station01", "Station05"),
+  max_depths = 30
+)
+```
+
+------------------------------------------------------------------------
+
+# Step 2: Extracting Station Metadata
+
+Before constructing structural model inputs, relevant contextual
+attributes (temporal stamps, positional coordinates, temperature
+profiles, and salinity indexes) must be standardized. This block
+processes multiple raw deployment logs, extracts core identifiers, and
+leverages `lubridate` to construct decimal day metrics needed to compute
+matching celestial paths.
+
+### Function Script
+
+```{r step2-fun}
+
+```
+
+### Example Usage
+
+``` r
+# Generate the unified hydrometa_data anchor object
+hydrometa_data <- process_station_metadata()
+```
+
+------------------------------------------------------------------------
+
+# Step 3: Generating HydroLight Configs (IFILEs)
+
+The `hydrolight_ifile()` tool binds your compiled spatial/temporal
+environmental metadata (`hydrometa_data`) directly into a template
+HydroLight base model config. It handles string formatting rules
+required by the engine core (such as conversion to decimal-comma arrays)
+and cross-references the matching input tracks built in Step 1.
+
+### Function Definition
+
+\`\`\`{r step3-fun} \#' Create a HydroLight IFILE Configuration from
+Station Metadata
+
+\# Configuration values mapping dictionary config_values \<- list(
+general = "0, 400, 700, 0.02, 488, 0.00026, 1, 5.3", data_header =
+"Station", data_name = station_name, geometry_1 = "0, 0, 2, 1, 0",
+geometry_2 = "3, 1, 0, 4, 3, 1", depth_boundary = "2, 4", surface = "0,
+0, 0, 0", layer_1 = "0, 0, 440, 1, 0.014", layer_2 = "2, -666, 440, 1,
+0.014", layer_3 = "1, -1, 440, 1, 0.014", layer_4 = "1, 0, 440, 1,
+0.014", H2OabsorpTS = "../data/H2OabsorpTS.txt", astar1 =
+"astarDummy.txt", astar2 = "astarDummy.txt", astarchl =
+"../data/examples/astarchl.txt", missing_IOPs = "0, -999, -999, -999,
+-999, -999", end_IOPs = "-666, -999, -999, -999, -999, -999", bstar =
+"bstarDummy.txt", bstar_back = "dummybstar.txt", irradiance_1 =
+"0,0,550,0.01,0", irradiance_2 = "0,0,550,0.01,0", phase_H2O =
+"dpf_pure_H2O.txt", phase_particles = "dpf_Petzold_avg_particle.txt",
+num_wavelengths = 80, wavelengths = paste(seq(400, 800, 5), collapse =
+","), output_flags = "0,1,0,0,4", sky_conditions = sky_conditions,

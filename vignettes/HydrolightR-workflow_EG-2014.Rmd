@@ -1,0 +1,248 @@
+---
+title: "Hydrolight run on 2014 Eastyern greenland data"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+HydroLight simulations require depth-resolved inherent optical
+properties (IOPs) in a strict text format. The
+`create_hydrolight_ac_files()` function reads separate absorption (`a`)
+and attenuation (`c`) CSV datasets, joins them by station/depth,
+extracts the explicit wavelengths from the column metadata, and builds
+formatted text matrices containing HydroLight headers. \`\`\` \##
+getting data
+
+
+```{r}
+
+#Getting data
+setwd("Q:/hydrolite_data/Explore_hydrolight/AC_corrected_datasets")
+
+#read absorptions and attenuation
+
+abs_dat_2014<- read.csv("Atl_wat_all_depths_abs_spect_smoothed_2014.csv")
+atts_dat_2014<- read.csv("Atl_wat_all_depths_atts_spect_smoothed_2014.csv")
+
+#full data
+data_file<- read.csv("Q:/SCM-UC/Arctic-SCMs/final_fulldata.csv")
+#filter year and longitudes 
+
+data_file_2014_EGC<- subset(data_file,data_file$Longitude..degrees_east.<0 & 
+                              data_file$year == 2014)
+        #data_file$Latitude..degrees_north.>78.5 & data_file$Latitude..degrees_north.<79)
+#Greenland stations
+EG_station_2014<- unique(data_file_2014_EGC$Station)
+
+
+#filter absorptions by stations
+abs_dat_EG_2014<- abs_dat_2014[ abs_dat_2014$station %in% EG_station_2014,]
+
+#filter attenuation by stations
+atts_dat_EG_2014<- atts_dat_2014[atts_dat_2014$station %in% EG_station_2014,]
+
+
+```
+
+## Create ifiles 
+
+```{r include=TRUE}
+create_hydrolight_ac_files(
+  #data_dir = "Q:/hydrolite_data/Explore_hydrolight/AC_corrected_datasets",
+  output_dir = "Q:/hydrolight_runs/EG_2014_runs/",
+  abs_file = abs_dat_EG_2014,
+  atts_file = atts_dat_EG_2014,
+  data_suffix = "_smooac_2014.txt",
+  stations = NULL,
+  max_depths = 50
+)
+```
+### Create hydrolight Metadata
+
+```{r}
+
+meta_parameters<- c("X", "Cruise", "Station", "Type", "yyyy.mm.ddThh.mm.ss.sss",
+                    "Longitude..degrees_east.", "Latitude..degrees_north.", "St.", "Depth..m.",
+                    "Temperature...C.", "Salinity", "SigmT")
+# Keep the data you considered as mets, for comparison and statistics
+meta <- data_file_2014_EGC[, meta_parameters]
+# ---------------------------------------------------------
+# Extract year
+# ---------------------------------------------------------
+library(stringr)
+meta$years <- str_split(meta$yyyy.mm.ddThh.mm.ss.sss, "-", simplify = TRUE)[,1]
+# Unique stations
+stations <- unique(meta$Station)
+# ---------------------------------------------------------
+# Convert to datetime
+# ---------------------------------------------------------
+meta$Time <- as.POSIXct(
+  meta$yyyy.mm.ddThh.mm.ss.sss,
+  format = "%Y-%m-%dT%H:%M",
+  tz = "UTC"
+)
+library(lubridate)
+# Extract Hour (HH.MM format like Python)
+meta$Hour <- format(meta$Time, "%H.%M")
+# Day of year
+meta$day <- yday(meta$Time)
+#filter meta with greenaland 
+
+#Tomorrow
+meta_fil<- meta[ meta$Station %in% EG_station_2014,]
+
+# Final dataset
+hydrometa_data <- meta_fil
+
+```
+
+
+
+# Step 3: Generating HydroLight Configs (IFILEs)
+
+The `hydrolight_ifile()` tool binds your compiled spatial/temporal
+environmental metadata (`hydrometa_data`) directly into a template
+HydroLight base model config. It handles string formatting rules
+required by the engine core (such as conversion to decimal-comma arrays)
+and cross-references the matching input tracks built in Step 1.
+
+```{r}
+
+for(i in EG_station_2014){
+
+try(
+hydrolight_ifile(station_name = i,
+                
+        hydrometa_data=hydrometa_data,
+        template_path = "Q:/hydrolite_data/optical_proxyies_inverse/template_config.txt",
+        working_dir = "C:/HE60/run/batch",
+        ac_txt_dir = "Q:/hydrolight_runs/EG_2014_runs",
+        chl_txt_dir = "Q:/SCM-UC/Arctic-SCMs/chl_4_hydrolight_2014",
+        chl_suffix = "_chlzdata.txt",
+        cdom_txt_dir = "Q:/SCM-UC/Arctic-SCMs/cdom_4_hydrolight_2014",
+        cdom_suffix = "_cdomdata.txt",
+        data_suffix = "_smooac_2014.txt"
+))
+
+}
+
+```
+
+
+## Run in Hydrolight with pushbullet
+
+```{r}
+
+library(progress)
+library(stringr)
+library(RPushbullet)
+
+#----------------------------------------
+# Pushbullet setup
+#----------------------------------------
+pbSetup(apikey ="o.fMNaBrPojmldEtyTVULaNN1OpBY6DfV7")
+
+setwd("C:/HE60/run/batch")
+files <- list.files()
+
+stations <- str_replace_all(files, c("^I" = "", "\\.txt$" = ""))
+
+pb <- progress_bar$new(
+  format = "Running [:bar] :current/:total (:percent) ETA: :eta",
+  total = length(stations),
+  clear = FALSE,
+  width = 60
+)
+
+failed <- data.frame(
+  station = character(),
+  error = character(),
+  stringsAsFactors = FALSE
+)
+
+for (i in stations) {
+
+  tryCatch(
+    {
+      run_hydrolight(station = i)
+    },
+    error = function(e) {
+      failed <<- rbind(
+        failed,
+        data.frame(
+          station = i,
+          error = conditionMessage(e),
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+  )
+
+  pb$tick()
+}
+
+#----------------------------------------
+# Summary
+#----------------------------------------
+successful <- length(stations) - nrow(failed)
+
+cat("\n\nBatch processing finished.\n")
+cat("Successful:", successful, "\n")
+cat("Failed:", nrow(failed), "\n")
+
+if (nrow(failed) > 0) {
+
+  cat("\nFailed stations:\n")
+  print(failed)
+
+  report_file <- file.path(getwd(), "HydroLight_failed_report.csv")
+
+  write.csv(
+    failed,
+    report_file,
+    row.names = FALSE
+  )
+
+  cat("\nReport saved as 'HydroLight_failed_report.csv'\n")
+
+  # Pushbullet notification
+  pbPost(
+    type = "note",
+    title = "HydroLight batch completed",
+    body = paste(
+      "Stations completed:", successful,
+      "\nFailed:", nrow(failed),
+      "\nReport:", report_file
+    )
+  )
+
+} else {
+
+  # Pushbullet notification
+  pbPost(
+    type = "note",
+    title = "HydroLight batch completed",
+    body = paste(
+      successful,
+      "stations completed successfully."
+    )
+  )
+
+}
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
